@@ -1,4 +1,5 @@
 const db = require("../config/db");
+const { getIO } = require("../socket");
 
 db.query(
   `
@@ -19,6 +20,57 @@ db.query(
     }
   }
 );
+
+db.query(
+  `
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      event_id INT NOT NULL,
+      sender_email VARCHAR(255) NOT NULL,
+      sender_name VARCHAR(255) NOT NULL,
+      message TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_chat_event_created (event_id, created_at),
+      INDEX idx_chat_sender (sender_email)
+    )
+  `,
+  (err) => {
+    if (err) {
+      console.error("Failed to ensure chat_messages table exists:", err.message);
+    }
+  }
+);
+
+const canAccessEventChat = ({ eventId, user }, callback) => {
+  if (!Number.isInteger(eventId) || eventId <= 0) {
+    return callback(new Error("Invalid event id"));
+  }
+
+  if (!user?.email) {
+    return callback(new Error("User email missing"));
+  }
+
+  if (user?.role === "admin") {
+    return callback(null, true);
+  }
+
+  db.query(
+    `
+      SELECT id
+      FROM bookings
+      WHERE event_id = ? AND customer_email = ? AND status = 'approved'
+      LIMIT 1
+    `,
+    [eventId, user.email],
+    (err, rows) => {
+      if (err) {
+        return callback(err);
+      }
+
+      return callback(null, rows.length > 0);
+    }
+  );
+};
 
 db.query(
   `
@@ -286,7 +338,7 @@ const updateBookingStatus = (req, res) => {
 
   db.query(
     `
-      SELECT id, event_id, ticket_count, status
+      SELECT id, event_id, customer_email, ticket_count, status
       FROM bookings
       WHERE id = ?
       LIMIT 1
@@ -314,6 +366,18 @@ const updateBookingStatus = (req, res) => {
           (updateErr) => {
             if (updateErr) {
               return res.status(500).json({ message: "Failed to update booking status", error: updateErr.message });
+            }
+
+            try {
+              const io = getIO();
+              console.log("Emitting booking-status-updated to:", booking.customer_email, nextStatus);
+              io.to(booking.customer_email).emit("booking-status-updated", {
+                bookingId,
+                status: nextStatus,
+                eventId: booking.event_id
+              });
+            } catch {
+              // Socket server may be unavailable in tests or non-server contexts.
             }
 
             return res.json({
@@ -380,12 +444,15 @@ const updateBookingStatus = (req, res) => {
 // GET /events/my-bookings
 const getMyBookings = (req, res) => {
   const userEmail = req.user?.email;
+  const userRole = req.user?.role;
 
   if (!userEmail) {
     return res.status(400).json({
       message: "User email not found in token"
     });
   }
+
+  const isAdmin = userRole === "admin";
 
   const sql = `
     SELECT
@@ -402,11 +469,11 @@ const getMyBookings = (req, res) => {
       e.status AS event_status
     FROM bookings b
     JOIN events e ON b.event_id = e.id
-    WHERE b.customer_email = ?
+    WHERE (? = 1 OR b.customer_email = ?)
     ORDER BY b.id DESC
   `;
 
-  db.query(sql, [userEmail], (err, results) => {
+  db.query(sql, [isAdmin ? 1 : 0, userEmail], (err, results) => {
     if (err) {
       return res.status(500).json({
         message: "Failed to fetch bookings",
@@ -418,6 +485,43 @@ const getMyBookings = (req, res) => {
       message: "Bookings fetched successfully",
       data: results
     });
+  });
+};
+
+// GET /events/:id/chat-messages
+const getEventChatMessages = (req, res) => {
+  const eventId = Number(req.params.id);
+  const user = req.user;
+
+  canAccessEventChat({ eventId, user }, (accessErr, allowed) => {
+    if (accessErr) {
+      return res.status(400).json({ message: accessErr.message });
+    }
+
+    if (!allowed) {
+      return res.status(403).json({ message: "You are not allowed to access this event chat" });
+    }
+
+    db.query(
+      `
+        SELECT id, event_id, sender_email, sender_name, message, created_at
+        FROM chat_messages
+        WHERE event_id = ?
+        ORDER BY created_at ASC, id ASC
+        LIMIT 200
+      `,
+      [eventId],
+      (err, rows) => {
+        if (err) {
+          return res.status(500).json({ message: "Failed to fetch chat messages", error: err.message });
+        }
+
+        return res.json({
+          message: "Chat messages fetched successfully",
+          data: rows
+        });
+      }
+    );
   });
 };
 
@@ -572,6 +676,7 @@ module.exports = {
   deleteEvent,
   bookEvent,
   getMyBookings,
+  getEventChatMessages,
   getAllBookings,
   updateBookingStatus,
   getAllEventsCombined

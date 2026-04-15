@@ -10,6 +10,7 @@ const {
   deleteEvent,
   bookEvent,
   getMyBookings,
+  getEventChatMessages,
   getAllBookings,
   updateBookingStatus,
   getAllEventsCombined
@@ -18,6 +19,7 @@ const {
 router.get("/", getAllEvents);
 router.get("/all", getAllEventsCombined);
 router.get("/my-bookings", verifyToken, getMyBookings);
+router.get("/:id/chat-messages", verifyToken, getEventChatMessages);
 router.get("/bookings", verifyToken, requireAdmin, getAllBookings);
 router.patch("/bookings/:bookingId/status", verifyToken, requireAdmin, updateBookingStatus);
 router.get("/:id", getEventById);
