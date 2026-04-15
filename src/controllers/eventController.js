@@ -1,0 +1,578 @@
+const db = require("../config/db");
+
+db.query(
+  `
+    CREATE TABLE IF NOT EXISTS bookings (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      event_id INT NOT NULL,
+      customer_name VARCHAR(255) NOT NULL,
+      customer_email VARCHAR(255) NOT NULL,
+      ticket_count INT NOT NULL,
+      status VARCHAR(20) NOT NULL DEFAULT 'pending',
+      reminder_sent TINYINT(1) NOT NULL DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `,
+  (err) => {
+    if (err) {
+      console.error("Failed to ensure bookings table exists:", err.message);
+    }
+  }
+);
+
+db.query(
+  `
+    SELECT COUNT(*) AS count
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'bookings'
+      AND COLUMN_NAME = 'status'
+  `,
+  (checkErr, rows) => {
+    if (checkErr) {
+      console.error("Failed to verify bookings.status column:", checkErr.message);
+      return;
+    }
+
+    if (rows?.[0]?.count > 0) {
+      return;
+    }
+
+    db.query(
+      "ALTER TABLE bookings ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'pending'",
+      (alterErr) => {
+        if (alterErr) {
+          console.error("Failed to add bookings.status column:", alterErr.message);
+        }
+      }
+    );
+  }
+);
+
+// GET /events
+const getAllEvents = (req, res) => {
+  db.query("SELECT * FROM events", (err, results) => {
+    if (err) {
+      return res.status(500).json({
+        message: "Failed to fetch events",
+        error: err.message
+      });
+    }
+
+    res.json({
+      message: "Events fetched successfully",
+      data: results
+    });
+  });
+};
+
+// GET /events/:id
+const getEventById = (req, res) => {
+  const id = req.params.id;
+
+  if (isNaN(id)) {
+    return res.status(400).json({
+      message: "Invalid event id"
+    });
+  }
+
+  const sql = "SELECT * FROM events WHERE id = ?";
+
+  db.query(sql, [id], (err, results) => {
+    if (err) {
+      return res.status(500).json({
+        message: "Database error",
+        error: err.message
+      });
+    }
+
+    if (results.length === 0) {
+      return res.status(404).json({
+        message: "Event not found"
+      });
+    }
+
+    res.json({
+      message: "Event fetched successfully",
+      data: results[0]
+    });
+  });
+};
+
+// POST /events
+const createEvent = (req, res) => {
+  const {
+    title,
+    description,
+    category,
+    location,
+    price,
+    capacity,
+    status,
+    event_date
+  } = req.body;
+
+  if (!title || !location || !event_date || capacity === undefined || price === undefined) {
+    return res.status(400).json({
+      message: "Title, location, event_date, price and capacity are required"
+    });
+  }
+
+  if (capacity < 0 || price < 0) {
+    return res.status(400).json({
+      message: "Price and capacity cannot be negative"
+    });
+  }
+
+  const allowedStatuses = ["active", "inactive", "cancelled"];
+  if (status && !allowedStatuses.includes(status)) {
+    return res.status(400).json({
+      message: "Invalid status value"
+    });
+  }
+
+  const available_seats = capacity;
+
+  const sql = `
+    INSERT INTO events
+    (title, description, category, location, price, capacity, available_seats, status, event_date)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `;
+
+  db.query(
+    sql,
+    [
+      title,
+      description,
+      category,
+      location,
+      price,
+      capacity,
+      available_seats,
+      status || "active",
+      event_date
+    ],
+    (err, result) => {
+      if (err) {
+        return res.status(500).json({
+          message: "Failed to create event",
+          error: err.message
+        });
+      }
+
+      res.status(201).json({
+        message: "Event created successfully",
+        eventId: result.insertId
+      });
+    }
+  );
+};
+// POST /events/:id/book
+const bookEvent = (req, res) => {
+  const eventId = req.params.id;
+
+  const { customer_name, customer_email, ticket_count } = req.body;
+
+  // validation
+  if (!customer_name || !customer_email || !ticket_count) {
+    return res.status(400).json({
+      message: "All fields are required"
+    });
+  }
+
+  if (ticket_count <= 0) {
+    return res.status(400).json({
+      message: "Ticket count must be greater than 0"
+    });
+  }
+
+  // 1. Event kontrol
+  db.query("SELECT * FROM events WHERE id = ?", [eventId], (err, results) => {
+    if (err) {
+      return res.status(500).json({
+        message: "Database error",
+        error: err.message
+      });
+    }
+
+    if (results.length === 0) {
+      return res.status(404).json({
+        message: "Event not found"
+      });
+    }
+
+    const event = results[0];
+
+    // 2. Koltuk kontrol
+    if (event.available_seats < ticket_count) {
+      return res.status(400).json({
+        message: "Not enough seats available"
+      });
+    }
+
+    // 3. Booking ekle
+    const insertSql = `
+      INSERT INTO bookings (event_id, customer_name, customer_email, ticket_count, status)
+      VALUES (?, ?, ?, ?, 'pending')
+    `;
+
+    db.query(
+      insertSql,
+      [eventId, customer_name, customer_email, ticket_count],
+      (err) => {
+        if (err) {
+          return res.status(500).json({
+            message: "Failed to create booking",
+            error: err.message
+          });
+        }
+
+        // 4. Başarı: koltuk düşümü admin onayında yapılır.
+        res.status(201).json({
+          message: "Booking submitted for approval"
+        });
+      }
+    );
+  });
+};
+
+// GET /events/bookings
+const getAllBookings = (req, res) => {
+  const sql = `
+    SELECT
+      b.id,
+      b.event_id,
+      b.customer_name,
+      b.customer_email,
+      b.ticket_count,
+      b.status,
+      b.created_at,
+      e.title,
+      e.location,
+      e.event_date,
+      e.price
+    FROM bookings b
+    JOIN events e ON b.event_id = e.id
+    ORDER BY b.id DESC
+  `;
+
+  db.query(sql, (err, results) => {
+    if (err) {
+      return res.status(500).json({
+        message: "Failed to fetch bookings",
+        error: err.message
+      });
+    }
+
+    return res.json({
+      message: "Bookings fetched successfully",
+      data: results
+    });
+  });
+};
+
+// PATCH /events/bookings/:bookingId/status
+const updateBookingStatus = (req, res) => {
+  const bookingId = Number(req.params.bookingId);
+  const nextStatus = req.body?.status;
+
+  if (!Number.isInteger(bookingId) || bookingId <= 0) {
+    return res.status(400).json({ message: "Invalid booking id" });
+  }
+
+  if (nextStatus !== "approved" && nextStatus !== "cancelled") {
+    return res.status(400).json({ message: "Status must be approved or cancelled" });
+  }
+
+  db.query(
+    `
+      SELECT id, event_id, ticket_count, status
+      FROM bookings
+      WHERE id = ?
+      LIMIT 1
+    `,
+    [bookingId],
+    (findErr, rows) => {
+      if (findErr) {
+        return res.status(500).json({ message: "Database error", error: findErr.message });
+      }
+
+      if (!rows.length) {
+        return res.status(404).json({ message: "Booking not found" });
+      }
+
+      const booking = rows[0];
+
+      if (booking.status === nextStatus) {
+        return res.json({ message: "Booking status already updated" });
+      }
+
+      const setStatus = () => {
+        db.query(
+          "UPDATE bookings SET status = ? WHERE id = ?",
+          [nextStatus, bookingId],
+          (updateErr) => {
+            if (updateErr) {
+              return res.status(500).json({ message: "Failed to update booking status", error: updateErr.message });
+            }
+
+            return res.json({
+              message: "Booking status updated",
+              data: { id: bookingId, status: nextStatus }
+            });
+          }
+        );
+      };
+
+      if (booking.status === "approved" && nextStatus === "cancelled") {
+        return db.query(
+          "UPDATE events SET available_seats = available_seats + ? WHERE id = ?",
+          [booking.ticket_count, booking.event_id],
+          (seatErr) => {
+            if (seatErr) {
+              return res.status(500).json({ message: "Failed to release seats", error: seatErr.message });
+            }
+            return setStatus();
+          }
+        );
+      }
+
+      if (
+        (booking.status === "cancelled" || booking.status === "pending") &&
+        nextStatus === "approved"
+      ) {
+        return db.query(
+          "SELECT available_seats FROM events WHERE id = ? LIMIT 1",
+          [booking.event_id],
+          (eventErr, eventRows) => {
+            if (eventErr) {
+              return res.status(500).json({ message: "Database error", error: eventErr.message });
+            }
+
+            if (!eventRows.length) {
+              return res.status(404).json({ message: "Event not found" });
+            }
+
+            if (eventRows[0].available_seats < booking.ticket_count) {
+              return res.status(400).json({ message: "Not enough seats to approve this booking" });
+            }
+
+            db.query(
+              "UPDATE events SET available_seats = available_seats - ? WHERE id = ?",
+              [booking.ticket_count, booking.event_id],
+              (seatErr) => {
+                if (seatErr) {
+                  return res.status(500).json({ message: "Failed to reserve seats", error: seatErr.message });
+                }
+
+                return setStatus();
+              }
+            );
+          }
+        );
+      }
+
+      return setStatus();
+    }
+  );
+};
+
+// GET /events/my-bookings
+const getMyBookings = (req, res) => {
+  const userEmail = req.user?.email;
+
+  if (!userEmail) {
+    return res.status(400).json({
+      message: "User email not found in token"
+    });
+  }
+
+  const sql = `
+    SELECT
+      b.id,
+      b.event_id,
+      b.customer_name,
+      b.customer_email,
+      b.ticket_count,
+      b.status,
+      e.title,
+      e.location,
+      e.event_date,
+      e.price,
+      e.status AS event_status
+    FROM bookings b
+    JOIN events e ON b.event_id = e.id
+    WHERE b.customer_email = ?
+    ORDER BY b.id DESC
+  `;
+
+  db.query(sql, [userEmail], (err, results) => {
+    if (err) {
+      return res.status(500).json({
+        message: "Failed to fetch bookings",
+        error: err.message
+      });
+    }
+
+    return res.json({
+      message: "Bookings fetched successfully",
+      data: results
+    });
+  });
+};
+
+// PUT /events/:id
+const updateEvent = (req, res) => {
+  const id = req.params.id;
+
+  if (isNaN(id)) {
+    return res.status(400).json({
+      message: "Invalid event id"
+    });
+  }
+
+  const {
+    title,
+    description,
+    category,
+    location,
+    price,
+    capacity,
+    status,
+    event_date
+  } = req.body;
+
+  if (!title || !location || !event_date || capacity === undefined || price === undefined) {
+    return res.status(400).json({
+      message: "Title, location, event_date, price and capacity are required"
+    });
+  }
+
+  if (capacity < 0 || price < 0) {
+    return res.status(400).json({
+      message: "Price and capacity cannot be negative"
+    });
+  }
+
+  const allowedStatuses = ["active", "inactive", "cancelled"];
+  if (status && !allowedStatuses.includes(status)) {
+    return res.status(400).json({
+      message: "Invalid status value"
+    });
+  }
+
+  const sql = `
+    UPDATE events
+    SET title = ?, description = ?, category = ?, location = ?, price = ?, capacity = ?, available_seats = ?, status = ?, event_date = ?
+    WHERE id = ?
+  `;
+
+  db.query(
+    sql,
+    [title, description, category, location, price, capacity, capacity, status || "active", event_date, id],
+    (err, result) => {
+      if (err) {
+        return res.status(500).json({
+          message: "Failed to update event",
+          error: err.message
+        });
+      }
+
+      if (result.affectedRows === 0) {
+        return res.status(404).json({
+          message: "Event not found"
+        });
+      }
+
+      res.json({
+        message: "Event updated successfully"
+      });
+    }
+  );
+};
+
+// DELETE /events/:id
+const deleteEvent = (req, res) => {
+  const id = req.params.id;
+
+  if (isNaN(id)) {
+    return res.status(400).json({
+      message: "Invalid event id"
+    });
+  }
+
+  const sql = "DELETE FROM events WHERE id = ?";
+
+  db.query(sql, [id], (err, result) => {
+    if (err) {
+      return res.status(500).json({
+        message: "Database error",
+        error: err.message
+      });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        message: "Event not found"
+      });
+    }
+
+    res.json({
+      message: "Event deleted successfully"
+    });
+  });
+};
+const { searchEvents } = require("../providers/ticketmasterService");
+
+const getAllEventsCombined = async (req, res) => {
+  try {
+    // 1. Local events
+    db.query("SELECT * FROM events", async (err, localEvents) => {
+      if (err) {
+        return res.status(500).json({
+          message: "Failed to fetch local events",
+          error: err.message
+        });
+      }
+
+      // 2. External events
+      const externalData = await searchEvents({
+        keyword: req.query.keyword,
+        city: req.query.city,
+        countryCode: req.query.countryCode
+      });
+
+      const externalEvents = externalData.events;
+
+      // 3. Birleştir
+      const combined = [
+        ...localEvents.map(e => ({ ...e, source: "local" })),
+        ...externalEvents
+      ];
+
+      res.json({
+        message: "All events (local + external)",
+        total: combined.length,
+        events: combined
+      });
+    });
+  } catch (error) {
+    res.status(500).json({
+      message: "Failed to combine events",
+      error: error.message
+    });
+  }
+};
+
+module.exports = {
+  getAllEvents,
+  getEventById,
+  createEvent,
+  updateEvent,
+  deleteEvent,
+  bookEvent,
+  getMyBookings,
+  getAllBookings,
+  updateBookingStatus,
+  getAllEventsCombined
+};
