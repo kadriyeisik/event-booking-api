@@ -1,8 +1,12 @@
 import 'package:flutter/material.dart';
+import 'dart:async';
 
 import 'models/my_booking.dart';
 import 'services/api_service.dart';
+import 'services/auth_service.dart';
 import 'services/csv_export_service.dart';
+import 'services/socket_service.dart';
+import 'event_chat_screen.dart';
 
 class MyBookingsScreen extends StatefulWidget {
   const MyBookingsScreen({super.key});
@@ -14,11 +18,24 @@ class MyBookingsScreen extends StatefulWidget {
 class _MyBookingsScreenState extends State<MyBookingsScreen> {
   late Future<List<MyBooking>> _bookingsFuture;
   List<MyBooking> _latestBookings = const [];
+  StreamSubscription<Map<String, dynamic>>? _bookingStatusSub;
 
   @override
   void initState() {
     super.initState();
     _bookingsFuture = ApiService.fetchMyBookings();
+    _bookingStatusSub = SocketService.instance.bookingStatusUpdates.listen((_) {
+      if (!mounted) {
+        return;
+      }
+      _refresh();
+    });
+  }
+
+  @override
+  void dispose() {
+    _bookingStatusSub?.cancel();
+    super.dispose();
   }
 
   Future<void> _refresh() async {
@@ -79,6 +96,11 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
       return raw.substring(0, 10);
     }
     return raw;
+  }
+
+  bool _canOpenChat(MyBooking booking) {
+    final isAdmin = AuthService.currentUser?.role == 'admin';
+    return isAdmin || booking.eventStatus.trim().toLowerCase() == 'approved';
   }
 
   Widget _buildLoadingState() {
@@ -251,6 +273,27 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
                             style: const TextStyle(
                               fontWeight: FontWeight.bold,
                               color: Colors.deepPurple,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Align(
+                            alignment: Alignment.centerRight,
+                            child: FilledButton.icon(
+                              onPressed: _canOpenChat(booking)
+                                  ? () {
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (_) => EventChatScreen(
+                                            eventId: booking.eventId,
+                                            eventTitle: booking.eventTitle,
+                                          ),
+                                        ),
+                                      );
+                                    }
+                                  : null,
+                              icon: const Icon(Icons.forum_outlined),
+                              label: const Text('Sohbet Odası'),
                             ),
                           ),
                         ],

@@ -49,6 +49,7 @@ db.query = (sql, params, callback) => {
     normalized.startsWith("create table if not exists users") ||
     normalized.startsWith("create table if not exists password_resets") ||
     normalized.startsWith("create table if not exists bookings") ||
+    normalized.startsWith("create table if not exists chat_messages") ||
     normalized.startsWith("alter table bookings add column status") ||
     normalized === "select 1"
   ) {
@@ -173,7 +174,7 @@ db.query = (sql, params, callback) => {
     return cb?.(null, results);
   }
 
-  if (normalized.startsWith("select id, event_id, ticket_count, status from bookings where id = ? limit 1")) {
+  if (normalized.startsWith("select id, event_id, customer_email, ticket_count, status from bookings where id = ? limit 1")) {
     const booking = state.bookings.find((item) => item.id === Number(values[0]));
     return cb?.(null, booking ? [booking] : []);
   }

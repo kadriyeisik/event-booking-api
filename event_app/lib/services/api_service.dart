@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 import '../models/event.dart';
 import '../models/my_booking.dart';
 import '../models/admin_booking.dart';
+import '../models/chat_message.dart';
 import 'auth_service.dart';
 
 class ApiService {
@@ -95,6 +96,34 @@ class ApiService {
     final msg = body is Map
         ? body['message'] ?? 'Rezervasyonlar alınamadı.'
         : 'Rezervasyonlar alınamadı.';
+    throw Exception(msg);
+  }
+
+  static Future<List<ChatMessage>> fetchEventChatMessages(int eventId) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/events/$eventId/chat-messages'),
+      headers: _buildHeaders(withAuth: true),
+    );
+
+    if (_isUnauthorized(response)) {
+      await _handleUnauthorized();
+      throw Exception('Oturum süresi doldu. Lütfen tekrar giriş yapın.');
+    }
+
+    if (response.statusCode == 200) {
+      final body = _tryDecode(response.body);
+      final List data =
+          (body is Map<String, dynamic> ? body['data'] : null) ?? [];
+      return data
+          .whereType<Map>()
+          .map((e) => ChatMessage.fromJson(Map<String, dynamic>.from(e)))
+          .toList();
+    }
+
+    final body = _tryDecode(response.body);
+    final msg = body is Map
+        ? body['message'] ?? 'Sohbet mesajları alınamadı.'
+        : 'Sohbet mesajları alınamadı.';
     throw Exception(msg);
   }
 

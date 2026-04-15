@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
+import 'dart:async';
 import 'models/booking_notification.dart';
 import 'models/event.dart';
 import 'models/my_booking.dart';
 import 'services/api_service.dart';
 import 'services/auth_service.dart';
 import 'services/booking_notification_service.dart';
+import 'services/socket_service.dart';
 import 'add_edit_event_page.dart';
 import 'booking_screen.dart';
 import 'my_bookings_screen.dart';
@@ -488,6 +490,7 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   late Future<List<Event>> events;
   late Future<List<MyBooking>> _notificationBookings;
+  StreamSubscription<Map<String, dynamic>>? _bookingStatusSub;
   final TextEditingController _eventSearchController = TextEditingController();
   String _eventSeatFilter = 'all';
 
@@ -530,15 +533,42 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     loadEvents();
-    _notificationBookings = _isAdmin
-        ? Future.value(const <MyBooking>[])
-        : ApiService.fetchMyBookings();
+    _notificationBookings = ApiService.fetchMyBookings();
+    _bindSocketUpdates();
   }
 
   @override
   void dispose() {
+    _bookingStatusSub?.cancel();
+    if (!_isAdmin) {
+      SocketService.instance.disconnect();
+    }
     _eventSearchController.dispose();
     super.dispose();
+  }
+
+  void _bindSocketUpdates() {
+    if (_isAdmin) {
+      return;
+    }
+
+    final email = AuthService.currentUser?.email;
+    final token = AuthService.token;
+    if (email == null || email.trim().isEmpty || token == null || token.trim().isEmpty) {
+      return;
+    }
+
+    SocketService.instance.connectForUser(email: email, token: token);
+    _bookingStatusSub?.cancel();
+    _bookingStatusSub = SocketService.instance.bookingStatusUpdates.listen((_) {
+      if (!mounted || _isAdmin) {
+        return;
+      }
+
+      setState(() {
+        _notificationBookings = ApiService.fetchMyBookings();
+      });
+    });
   }
 
   void loadEvents() {
@@ -899,9 +929,21 @@ class _HomePageState extends State<HomePage> {
                 );
               },
             ),
+          if (_isAdmin)
+            IconButton(
+              icon: const Icon(Icons.forum_outlined),
+              tooltip: 'Sohbet Odaları',
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const MyBookingsScreen()),
+                );
+              },
+            ),
           IconButton(
             icon: const Icon(Icons.logout),
             onPressed: () async {
+              SocketService.instance.disconnect();
               await AuthService.logout();
               if (!context.mounted) {
                 return;
@@ -951,27 +993,32 @@ class _HomePageState extends State<HomePage> {
                             ),
                             onTap: _openProfilePage,
                           ),
-                          if (!_isAdmin) const Divider(height: 1),
-                          if (!_isAdmin)
-                            ListTile(
-                              leading: const Icon(
-                                Icons.receipt_long,
-                                color: Colors.deepPurple,
-                              ),
-                              title: const Text('Rezervasyonlarım'),
-                              subtitle: const Text(
-                                'Geçmiş rezervasyonlarını görüntüle',
-                              ),
-                              trailing: const Icon(Icons.chevron_right),
-                              onTap: () {
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (_) => const MyBookingsScreen(),
-                                  ),
-                                );
-                              },
+                          const Divider(height: 1),
+                          ListTile(
+                            leading: Icon(
+                              _isAdmin
+                                  ? Icons.forum_outlined
+                                  : Icons.receipt_long,
+                              color: Colors.deepPurple,
                             ),
+                            title: Text(
+                              _isAdmin ? 'Sohbet Odaları' : 'Rezervasyonlarım',
+                            ),
+                            subtitle: Text(
+                              _isAdmin
+                                  ? 'Etkinlik sohbet odalarına eriş'
+                                  : 'Geçmiş rezervasyonlarını görüntüle',
+                            ),
+                            trailing: const Icon(Icons.chevron_right),
+                            onTap: () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => const MyBookingsScreen(),
+                                ),
+                              );
+                            },
+                          ),
                         ],
                       ),
                     ),
