@@ -50,6 +50,7 @@ db.query = (sql, params, callback) => {
     normalized.startsWith("create table if not exists password_resets") ||
     normalized.startsWith("create table if not exists bookings") ||
     normalized.startsWith("create table if not exists chat_messages") ||
+    normalized.startsWith("create table if not exists chat_room_reads") ||
     normalized.startsWith("alter table bookings add column status") ||
     normalized === "select 1"
   ) {
@@ -152,6 +153,30 @@ db.query = (sql, params, callback) => {
     return cb?.(null, results);
   }
 
+  if (normalized.startsWith("select b.id, b.event_id, b.customer_name, b.customer_email, b.ticket_count, b.status, e.title, e.location, e.event_date, e.price, e.status as event_status from bookings b join events e on b.event_id = e.id where (? = 1 or b.customer_email = ?) order by b.id desc")) {
+    const [isAdmin, userEmail] = values;
+    const results = state.bookings
+      .filter((booking) => Number(isAdmin) === 1 || booking.customer_email === userEmail)
+      .sort((a, b) => b.id - a.id)
+      .map((booking) => {
+        const event = state.events.find((item) => item.id === booking.event_id);
+        return {
+          id: booking.id,
+          event_id: booking.event_id,
+          customer_name: booking.customer_name,
+          customer_email: booking.customer_email,
+          ticket_count: booking.ticket_count,
+          status: booking.status,
+          title: event.title,
+          location: event.location,
+          event_date: event.event_date,
+          price: event.price,
+          event_status: event.status
+        };
+      });
+    return cb?.(null, results);
+  }
+
   if (normalized.startsWith("select b.id, b.event_id, b.customer_name, b.customer_email, b.ticket_count, b.status, b.created_at, e.title, e.location, e.event_date, e.price from bookings b join events e on b.event_id = e.id order by b.id desc")) {
     const results = [...state.bookings]
       .sort((a, b) => b.id - a.id)
@@ -177,6 +202,10 @@ db.query = (sql, params, callback) => {
   if (normalized.startsWith("select id, event_id, customer_email, ticket_count, status from bookings where id = ? limit 1")) {
     const booking = state.bookings.find((item) => item.id === Number(values[0]));
     return cb?.(null, booking ? [booking] : []);
+  }
+
+  if (normalized.startsWith("select id, event_id, sender_email, sender_name, message, created_at from chat_messages where event_id = ? and (? = 0 or id < ?) order by id desc limit ?")) {
+    return cb?.(null, []);
   }
 
   if (normalized.startsWith("select available_seats from events where id = ? limit 1")) {

@@ -11,6 +11,8 @@ const {
   bookEvent,
   getMyBookings,
   getEventChatMessages,
+  getEventChatUnreadCounts,
+  markEventChatAsRead,
   getAllBookings,
   updateBookingStatus,
   getAllEventsCombined
@@ -19,7 +21,9 @@ const {
 router.get("/", getAllEvents);
 router.get("/all", getAllEventsCombined);
 router.get("/my-bookings", verifyToken, getMyBookings);
+router.get("/chat-unread-counts", verifyToken, getEventChatUnreadCounts);
 router.get("/:id/chat-messages", verifyToken, getEventChatMessages);
+router.post("/:id/chat-read", verifyToken, markEventChatAsRead);
 router.get("/bookings", verifyToken, requireAdmin, getAllBookings);
 router.patch("/bookings/:bookingId/status", verifyToken, requireAdmin, updateBookingStatus);
 router.get("/:id", getEventById);

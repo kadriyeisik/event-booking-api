@@ -41,6 +41,25 @@ db.query(
   }
 );
 
+db.query(
+  `
+    CREATE TABLE IF NOT EXISTS chat_room_reads (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      event_id INT NOT NULL,
+      user_email VARCHAR(255) NOT NULL,
+      last_read_message_id INT NOT NULL DEFAULT 0,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uniq_chat_room_read (event_id, user_email),
+      INDEX idx_chat_room_read_user (user_email)
+    )
+  `,
+  (err) => {
+    if (err) {
+      console.error("Failed to ensure chat_room_reads table exists:", err.message);
+    }
+  }
+);
+
 const canAccessEventChat = ({ eventId, user }, callback) => {
   if (!Number.isInteger(eventId) || eventId <= 0) {
     return callback(new Error("Invalid event id"));
@@ -492,6 +511,13 @@ const getMyBookings = (req, res) => {
 const getEventChatMessages = (req, res) => {
   const eventId = Number(req.params.id);
   const user = req.user;
+  const rawLimit = Number(req.query.limit);
+  const limit = Number.isInteger(rawLimit)
+    ? Math.min(Math.max(rawLimit, 1), 100)
+    : 30;
+  const rawBeforeId = Number(req.query.beforeId);
+  const hasBeforeId = Number.isInteger(rawBeforeId) && rawBeforeId > 0;
+  const beforeId = hasBeforeId ? rawBeforeId : 0;
 
   canAccessEventChat({ eventId, user }, (accessErr, allowed) => {
     if (accessErr) {
@@ -507,19 +533,166 @@ const getEventChatMessages = (req, res) => {
         SELECT id, event_id, sender_email, sender_name, message, created_at
         FROM chat_messages
         WHERE event_id = ?
-        ORDER BY created_at ASC, id ASC
-        LIMIT 200
+          AND (? = 0 OR id < ?)
+        ORDER BY id DESC
+        LIMIT ?
       `,
-      [eventId],
+      [eventId, hasBeforeId ? 1 : 0, beforeId, limit + 1],
       (err, rows) => {
         if (err) {
           return res.status(500).json({ message: "Failed to fetch chat messages", error: err.message });
         }
 
+        const hasMore = rows.length > limit;
+        const sliced = hasMore ? rows.slice(0, limit) : rows;
+        const data = sliced.reverse();
+        const nextBeforeId = data.length > 0 ? data[0].id : null;
+
         return res.json({
           message: "Chat messages fetched successfully",
-          data: rows
+          data,
+          meta: {
+            hasMore,
+            nextBeforeId,
+            limit
+          }
         });
+      }
+    );
+  });
+};
+
+// GET /events/chat-unread-counts
+const getEventChatUnreadCounts = (req, res) => {
+  const userEmail = req.user?.email;
+  const userRole = req.user?.role;
+
+  if (!userEmail) {
+    return res.status(400).json({ message: "User email not found in token" });
+  }
+
+  const onRows = (err, rows) => {
+    if (err) {
+      return res.status(500).json({ message: "Failed to fetch unread chat counts", error: err.message });
+    }
+
+    const data = rows.map((row) => ({
+      eventId: Number(row.event_id),
+      unreadCount: Number(row.unread_count)
+    }));
+
+    return res.json({
+      message: "Unread chat counts fetched successfully",
+      data
+    });
+  };
+
+  if (userRole === "admin") {
+    db.query(
+      `
+        SELECT cm.event_id, COUNT(*) AS unread_count
+        FROM chat_messages cm
+        LEFT JOIN chat_room_reads rr
+          ON rr.event_id = cm.event_id AND rr.user_email = ?
+        WHERE cm.id > COALESCE(rr.last_read_message_id, 0)
+        GROUP BY cm.event_id
+        HAVING unread_count > 0
+      `,
+      [userEmail],
+      onRows
+    );
+    return;
+  }
+
+  db.query(
+    `
+      SELECT cm.event_id, COUNT(*) AS unread_count
+      FROM chat_messages cm
+      JOIN (
+        SELECT DISTINCT event_id
+        FROM bookings
+        WHERE customer_email = ? AND status = 'approved'
+      ) allowed ON allowed.event_id = cm.event_id
+      LEFT JOIN chat_room_reads rr
+        ON rr.event_id = cm.event_id AND rr.user_email = ?
+      WHERE cm.id > COALESCE(rr.last_read_message_id, 0)
+      GROUP BY cm.event_id
+      HAVING unread_count > 0
+    `,
+    [userEmail, userEmail],
+    onRows
+  );
+  return;
+};
+
+// POST /events/:id/chat-read
+const markEventChatAsRead = (req, res) => {
+  const eventId = Number(req.params.id);
+  const user = req.user;
+  const userEmail = user?.email;
+
+  if (!userEmail) {
+    return res.status(400).json({ message: "User email not found in token" });
+  }
+
+  canAccessEventChat({ eventId, user }, (accessErr, allowed) => {
+    if (accessErr) {
+      return res.status(400).json({ message: accessErr.message });
+    }
+
+    if (!allowed) {
+      return res.status(403).json({ message: "You are not allowed to access this event chat" });
+    }
+
+    db.query(
+      `
+        SELECT id
+        FROM chat_messages
+        WHERE event_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+      `,
+      [eventId],
+      (findErr, rows) => {
+        if (findErr) {
+          return res.status(500).json({ message: "Failed to mark chat as read", error: findErr.message });
+        }
+
+        const latestMessageId = rows?.[0]?.id ? Number(rows[0].id) : 0;
+
+        db.query(
+          `
+            INSERT INTO chat_room_reads (event_id, user_email, last_read_message_id)
+            VALUES (?, ?, ?)
+            ON DUPLICATE KEY UPDATE
+              last_read_message_id = VALUES(last_read_message_id),
+              updated_at = CURRENT_TIMESTAMP
+          `,
+          [eventId, userEmail, latestMessageId],
+          (upsertErr) => {
+            if (upsertErr) {
+              return res.status(500).json({ message: "Failed to mark chat as read", error: upsertErr.message });
+            }
+
+            try {
+              const io = getIO();
+              io.to(userEmail).emit("chat-unread-reset", {
+                eventId,
+                unreadCount: 0
+              });
+            } catch {
+              // Socket server may be unavailable in tests or non-server contexts.
+            }
+
+            return res.json({
+              message: "Chat marked as read",
+              data: {
+                eventId,
+                lastReadMessageId: latestMessageId
+              }
+            });
+          }
+        );
       }
     );
   });
@@ -677,6 +850,8 @@ module.exports = {
   bookEvent,
   getMyBookings,
   getEventChatMessages,
+  getEventChatUnreadCounts,
+  markEventChatAsRead,
   getAllBookings,
   updateBookingStatus,
   getAllEventsCombined

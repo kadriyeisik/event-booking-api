@@ -18,12 +18,24 @@ class SocketService {
       StreamController<Map<String, dynamic>>.broadcast();
     final StreamController<ChatMessage> _eventMessageController =
       StreamController<ChatMessage>.broadcast();
+    final StreamController<Map<String, dynamic>> _chatNotificationController =
+      StreamController<Map<String, dynamic>>.broadcast();
+    final StreamController<Map<String, dynamic>> _chatUnreadUpdatedController =
+      StreamController<Map<String, dynamic>>.broadcast();
+    final StreamController<Map<String, dynamic>> _eventTypingController =
+      StreamController<Map<String, dynamic>>.broadcast();
 
     final Set<int> _joinedEventRooms = <int>{};
 
   Stream<Map<String, dynamic>> get bookingStatusUpdates =>
       _bookingStatusController.stream;
   Stream<ChatMessage> get eventMessages => _eventMessageController.stream;
+    Stream<Map<String, dynamic>> get chatNotifications =>
+      _chatNotificationController.stream;
+    Stream<Map<String, dynamic>> get chatUnreadUpdates =>
+      _chatUnreadUpdatedController.stream;
+    Stream<Map<String, dynamic>> get eventTypingUpdates =>
+      _eventTypingController.stream;
 
   void connectForUser({required String email, required String token}) {
     final normalizedEmail = email.trim().toLowerCase();
@@ -99,6 +111,49 @@ class SocketService {
         }
       });
 
+      _socket!.on('chat-notification', (payload) {
+        developer.log(
+          'Received chat-notification: $payload',
+          name: 'SocketService',
+        );
+        if (payload is Map) {
+          _chatNotificationController.add(Map<String, dynamic>.from(payload));
+        }
+      });
+
+      _socket!.on('chat-unread-updated', (payload) {
+        developer.log(
+          'Received chat-unread-updated: $payload',
+          name: 'SocketService',
+        );
+        if (payload is Map) {
+          _chatUnreadUpdatedController.add(Map<String, dynamic>.from(payload));
+        }
+      });
+
+      _socket!.on('chat-unread-reset', (payload) {
+        developer.log(
+          'Received chat-unread-reset: $payload',
+          name: 'SocketService',
+        );
+        if (payload is Map) {
+          final map = Map<String, dynamic>.from(payload);
+          map['unreadDelta'] = 0;
+          map['unreadCount'] = 0;
+          _chatUnreadUpdatedController.add(map);
+        }
+      });
+
+      _socket!.on('event-typing', (payload) {
+        developer.log(
+          'Received event-typing: $payload',
+          name: 'SocketService',
+        );
+        if (payload is Map) {
+          _eventTypingController.add(Map<String, dynamic>.from(payload));
+        }
+      });
+
       _socket!.connect();
     }
 
@@ -170,6 +225,17 @@ class SocketService {
 
     _socket!.emitWithAck('leave-event-room', eventId, ack: (_) {});
     _joinedEventRooms.remove(eventId);
+  }
+
+  void setEventTyping({required int eventId, required bool isTyping}) {
+    if (eventId <= 0 || _socket == null || !isConnected) {
+      return;
+    }
+
+    _socket!.emit('event-typing', {
+      'eventId': eventId,
+      'isTyping': isTyping,
+    });
   }
 
   Future<void> sendEventMessage({required int eventId, required String message}) {

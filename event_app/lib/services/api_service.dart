@@ -7,6 +7,28 @@ import '../models/admin_booking.dart';
 import '../models/chat_message.dart';
 import 'auth_service.dart';
 
+class ChatMessagePage {
+  final List<ChatMessage> messages;
+  final bool hasMore;
+  final int? nextBeforeId;
+
+  ChatMessagePage({
+    required this.messages,
+    required this.hasMore,
+    required this.nextBeforeId,
+  });
+}
+
+class ChatUnreadCount {
+  final int eventId;
+  final int unreadCount;
+
+  ChatUnreadCount({
+    required this.eventId,
+    required this.unreadCount,
+  });
+}
+
 class ApiService {
   static String get baseUrl {
     const overrideUrl = String.fromEnvironment('API_BASE_URL');
@@ -124,6 +146,116 @@ class ApiService {
     final msg = body is Map
         ? body['message'] ?? 'Sohbet mesajları alınamadı.'
         : 'Sohbet mesajları alınamadı.';
+    throw Exception(msg);
+  }
+
+  static Future<ChatMessagePage> fetchEventChatMessagePage({
+    required int eventId,
+    int limit = 30,
+    int? beforeId,
+  }) async {
+    final query = <String, String>{'limit': '$limit'};
+    if (beforeId != null && beforeId > 0) {
+      query['beforeId'] = '$beforeId';
+    }
+
+    final uri = Uri.parse('$baseUrl/events/$eventId/chat-messages')
+        .replace(queryParameters: query);
+
+    final response = await http.get(
+      uri,
+      headers: _buildHeaders(withAuth: true),
+    );
+
+    if (_isUnauthorized(response)) {
+      await _handleUnauthorized();
+      throw Exception('Oturum süresi doldu. Lütfen tekrar giriş yapın.');
+    }
+
+    if (response.statusCode == 200) {
+      final body = _tryDecode(response.body);
+      final List rawData =
+          (body is Map<String, dynamic> ? body['data'] : null) ?? [];
+      final messages = rawData
+          .whereType<Map>()
+          .map((e) => ChatMessage.fromJson(Map<String, dynamic>.from(e)))
+          .toList();
+
+      final meta = body is Map<String, dynamic>
+          ? Map<String, dynamic>.from(body['meta'] ?? const {})
+          : const <String, dynamic>{};
+
+      final hasMore = meta['hasMore'] == true;
+      final nextBeforeId = int.tryParse('${meta['nextBeforeId'] ?? ''}');
+
+      return ChatMessagePage(
+        messages: messages,
+        hasMore: hasMore,
+        nextBeforeId: nextBeforeId,
+      );
+    }
+
+    final body = _tryDecode(response.body);
+    final msg = body is Map
+        ? body['message'] ?? 'Sohbet mesajları alınamadı.'
+        : 'Sohbet mesajları alınamadı.';
+    throw Exception(msg);
+  }
+
+  static Future<List<ChatUnreadCount>> fetchEventChatUnreadCounts() async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/events/chat-unread-counts'),
+      headers: _buildHeaders(withAuth: true),
+    );
+
+    if (_isUnauthorized(response)) {
+      await _handleUnauthorized();
+      throw Exception('Oturum süresi doldu. Lütfen tekrar giriş yapın.');
+    }
+
+    if (response.statusCode == 200) {
+      final body = _tryDecode(response.body);
+      final List rawData =
+          (body is Map<String, dynamic> ? body['data'] : null) ?? [];
+      return rawData
+          .whereType<Map>()
+          .map((item) {
+            final map = Map<String, dynamic>.from(item);
+            return ChatUnreadCount(
+              eventId: int.tryParse('${map['eventId'] ?? map['event_id'] ?? 0}') ?? 0,
+              unreadCount: int.tryParse('${map['unreadCount'] ?? map['unread_count'] ?? 0}') ?? 0,
+            );
+          })
+          .where((item) => item.eventId > 0)
+          .toList();
+    }
+
+    final body = _tryDecode(response.body);
+    final msg = body is Map
+        ? body['message'] ?? 'Sohbet okunmamis sayilari alinamadi.'
+        : 'Sohbet okunmamis sayilari alinamadi.';
+    throw Exception(msg);
+  }
+
+  static Future<void> markEventChatAsRead(int eventId) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/events/$eventId/chat-read'),
+      headers: _buildHeaders(withAuth: true),
+    );
+
+    if (_isUnauthorized(response)) {
+      await _handleUnauthorized();
+      throw Exception('Oturum süresi doldu. Lütfen tekrar giriş yapın.');
+    }
+
+    if (response.statusCode == 200) {
+      return;
+    }
+
+    final body = _tryDecode(response.body);
+    final msg = body is Map
+        ? body['message'] ?? 'Sohbet okundu olarak işaretlenemedi.'
+        : 'Sohbet okundu olarak işaretlenemedi.';
     throw Exception(msg);
   }
 

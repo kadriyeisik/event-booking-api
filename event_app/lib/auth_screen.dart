@@ -491,8 +491,13 @@ class _HomePageState extends State<HomePage> {
   late Future<List<Event>> events;
   late Future<List<MyBooking>> _notificationBookings;
   StreamSubscription<Map<String, dynamic>>? _bookingStatusSub;
+  StreamSubscription<Map<String, dynamic>>? _chatNotificationSub;
+  StreamSubscription<Map<String, dynamic>>? _chatUnreadSub;
   final TextEditingController _eventSearchController = TextEditingController();
   String _eventSeatFilter = 'all';
+  Map<int, int> _chatUnreadCounts = const <int, int>{};
+
+  int get _chatUnreadTotal => _chatUnreadCounts.values.fold<int>(0, (sum, count) => sum + count);
 
   Future<void> _openProfilePage() async {
     final result = await Navigator.push(
@@ -518,6 +523,19 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
+  Future<void> _openMyBookingsPage() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const MyBookingsScreen()),
+    );
+
+    if (!mounted || _isAdmin) {
+      return;
+    }
+
+    _loadChatUnreadCounts();
+  }
+
   String get _displayName {
     final name = AuthService.currentUser?.name.trim() ?? '';
     if (name.isNotEmpty) {
@@ -535,11 +553,16 @@ class _HomePageState extends State<HomePage> {
     loadEvents();
     _notificationBookings = ApiService.fetchMyBookings();
     _bindSocketUpdates();
+    if (!_isAdmin) {
+      _loadChatUnreadCounts();
+    }
   }
 
   @override
   void dispose() {
     _bookingStatusSub?.cancel();
+    _chatNotificationSub?.cancel();
+    _chatUnreadSub?.cancel();
     if (!_isAdmin) {
       SocketService.instance.disconnect();
     }
@@ -569,6 +592,122 @@ class _HomePageState extends State<HomePage> {
         _notificationBookings = ApiService.fetchMyBookings();
       });
     });
+
+    _chatNotificationSub?.cancel();
+    _chatNotificationSub = SocketService.instance.chatNotifications.listen((payload) {
+      if (!mounted || _isAdmin) {
+        return;
+      }
+
+      _loadChatUnreadCounts();
+
+      if (ModalRoute.of(context)?.isCurrent != true) {
+        return;
+      }
+
+      final eventTitle = (payload['eventTitle'] ?? 'Etkinlik sohbeti').toString();
+      final senderName = (payload['senderName'] ?? 'Biri').toString();
+      final preview = (payload['messagePreview'] ?? '').toString();
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('$eventTitle - $senderName: $preview'),
+          action: SnackBarAction(
+            label: 'Ac',
+            onPressed: _openMyBookingsPage,
+          ),
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    });
+
+    _chatUnreadSub?.cancel();
+    _chatUnreadSub = SocketService.instance.chatUnreadUpdates.listen((payload) {
+      if (!mounted || _isAdmin) {
+        return;
+      }
+
+      final eventId = int.tryParse('${payload['eventId'] ?? 0}') ?? 0;
+      if (eventId <= 0) {
+        return;
+      }
+
+      final unreadCount = int.tryParse('${payload['unreadCount'] ?? ''}');
+      final unreadDelta = int.tryParse('${payload['unreadDelta'] ?? ''}') ?? 0;
+
+      setState(() {
+        final next = Map<int, int>.from(_chatUnreadCounts);
+        if (unreadCount != null) {
+          if (unreadCount <= 0) {
+            next.remove(eventId);
+          } else {
+            next[eventId] = unreadCount;
+          }
+        } else {
+          final current = next[eventId] ?? 0;
+          final updated = current + unreadDelta;
+          if (updated <= 0) {
+            next.remove(eventId);
+          } else {
+            next[eventId] = updated;
+          }
+        }
+        _chatUnreadCounts = next;
+      });
+    });
+  }
+
+  Future<void> _loadChatUnreadCounts() async {
+    try {
+      final rows = await ApiService.fetchEventChatUnreadCounts();
+      if (!mounted || _isAdmin) {
+        return;
+      }
+
+      setState(() {
+        _chatUnreadCounts = {
+          for (final row in rows)
+            if (row.unreadCount > 0) row.eventId: row.unreadCount,
+        };
+      });
+    } catch (_) {
+      // Keep current counters if fetch fails.
+    }
+  }
+
+  Widget _buildChatAction() {
+    return IconButton(
+      tooltip: 'Sohbet Odaları',
+      onPressed: _openMyBookingsPage,
+      icon: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          const Icon(Icons.forum_outlined),
+          if (_chatUnreadTotal > 0)
+            Positioned(
+              right: -4,
+              top: -4,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.redAccent,
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                constraints: const BoxConstraints(minWidth: 18),
+                child: Text(
+                  _chatUnreadTotal > 9 ? '9+' : '$_chatUnreadTotal',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
   }
 
   void loadEvents() {
@@ -919,16 +1058,7 @@ class _HomePageState extends State<HomePage> {
               },
             ),
           if (!_isAdmin)
-            IconButton(
-              icon: const Icon(Icons.list_alt),
-              tooltip: 'Rezervasyonlarım',
-              onPressed: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const MyBookingsScreen()),
-                );
-              },
-            ),
+            _buildChatAction(),
           if (_isAdmin)
             IconButton(
               icon: const Icon(Icons.forum_outlined),

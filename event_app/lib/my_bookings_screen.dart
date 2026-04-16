@@ -19,23 +19,108 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
   late Future<List<MyBooking>> _bookingsFuture;
   List<MyBooking> _latestBookings = const [];
   StreamSubscription<Map<String, dynamic>>? _bookingStatusSub;
+  StreamSubscription<Map<String, dynamic>>? _chatNotificationSub;
+  StreamSubscription<Map<String, dynamic>>? _chatUnreadSub;
+  Map<int, int> _chatUnreadCounts = const <int, int>{};
 
   @override
   void initState() {
     super.initState();
     _bookingsFuture = ApiService.fetchMyBookings();
+    _loadUnreadCounts();
+
     _bookingStatusSub = SocketService.instance.bookingStatusUpdates.listen((_) {
       if (!mounted) {
         return;
       }
       _refresh();
     });
+
+    _chatNotificationSub = SocketService.instance.chatNotifications.listen((payload) {
+      if (!mounted) {
+        return;
+      }
+
+      _loadUnreadCounts();
+
+      if (ModalRoute.of(context)?.isCurrent != true) {
+        return;
+      }
+
+      final senderName = (payload['senderName'] ?? 'Biri').toString();
+      final preview = (payload['messagePreview'] ?? '').toString();
+      final eventId = int.tryParse('${payload['eventId'] ?? 0}') ?? 0;
+      final eventTitle = _latestBookings
+          .where((booking) => booking.eventId == eventId)
+          .map((booking) => booking.eventTitle)
+          .firstWhere(
+            (title) => title.trim().isNotEmpty,
+            orElse: () => 'Etkinlik sohbeti',
+          );
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('$eventTitle - $senderName: $preview'),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    });
+
+    _chatUnreadSub = SocketService.instance.chatUnreadUpdates.listen((payload) {
+      final eventId = int.tryParse('${payload['eventId'] ?? 0}') ?? 0;
+      if (eventId <= 0 || !mounted) {
+        return;
+      }
+
+      final unreadCount = int.tryParse('${payload['unreadCount'] ?? ''}');
+      final unreadDelta = int.tryParse('${payload['unreadDelta'] ?? ''}') ?? 0;
+
+      setState(() {
+        final next = Map<int, int>.from(_chatUnreadCounts);
+        if (unreadCount != null) {
+          if (unreadCount <= 0) {
+            next.remove(eventId);
+          } else {
+            next[eventId] = unreadCount;
+          }
+        } else {
+          final current = next[eventId] ?? 0;
+          final updated = current + unreadDelta;
+          if (updated <= 0) {
+            next.remove(eventId);
+          } else {
+            next[eventId] = updated;
+          }
+        }
+        _chatUnreadCounts = next;
+      });
+    });
   }
 
   @override
   void dispose() {
     _bookingStatusSub?.cancel();
+    _chatNotificationSub?.cancel();
+    _chatUnreadSub?.cancel();
     super.dispose();
+  }
+
+  Future<void> _loadUnreadCounts() async {
+    try {
+      final rows = await ApiService.fetchEventChatUnreadCounts();
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _chatUnreadCounts = {
+          for (final row in rows)
+            if (row.unreadCount > 0) row.eventId: row.unreadCount,
+        };
+      });
+    } catch (_) {
+      // Keep current counters if unread request fails.
+    }
   }
 
   Future<void> _refresh() async {
@@ -101,6 +186,10 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
   bool _canOpenChat(MyBooking booking) {
     final isAdmin = AuthService.currentUser?.role == 'admin';
     return isAdmin || booking.eventStatus.trim().toLowerCase() == 'approved';
+  }
+
+  int _chatUnreadForEvent(int eventId) {
+    return _chatUnreadCounts[eventId] ?? 0;
   }
 
   Widget _buildLoadingState() {
@@ -280,8 +369,8 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
                             alignment: Alignment.centerRight,
                             child: FilledButton.icon(
                               onPressed: _canOpenChat(booking)
-                                  ? () {
-                                      Navigator.push(
+                                  ? () async {
+                                      await Navigator.push(
                                         context,
                                         MaterialPageRoute(
                                           builder: (_) => EventChatScreen(
@@ -290,10 +379,39 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
                                           ),
                                         ),
                                       );
+
+                                      if (!mounted) {
+                                        return;
+                                      }
+
+                                      _loadUnreadCounts();
                                     }
                                   : null,
                               icon: const Icon(Icons.forum_outlined),
-                              label: const Text('Sohbet Odası'),
+                              label: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Text('Sohbet Odası'),
+                                  if (_chatUnreadForEvent(booking.eventId) > 0) ...[
+                                    const SizedBox(width: 8),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: Colors.orange,
+                                        borderRadius: BorderRadius.circular(10),
+                                      ),
+                                      child: Text(
+                                        _chatUnreadForEvent(booking.eventId).toString(),
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 11,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
                             ),
                           ),
                         ],

@@ -5,6 +5,7 @@ const db = require("./config/db");
 let io;
 
 const getEventRoomName = (eventId) => `event-${eventId}`;
+const ADMIN_EMAIL = "admin@test.com";
 
 const sanitizeMessage = (rawMessage) => {
     if (typeof rawMessage !== "string") {
@@ -41,6 +42,54 @@ const canJoinEventRoom = ({ eventId, user }, callback) => {
             }
 
             return callback(null, rows.length > 0);
+        }
+    );
+};
+
+const emitChatNotificationToRecipients = ({ eventId, senderEmail, senderName, message, createdAt }) => {
+    const preview = message.length > 120 ? `${message.slice(0, 117)}...` : message;
+
+    db.query(
+        `
+            SELECT DISTINCT b.customer_email AS email, e.title AS event_title
+            FROM bookings b
+            LEFT JOIN events e ON e.id = b.event_id
+            WHERE b.event_id = ? AND b.status = 'approved'
+        `,
+        [eventId],
+        (err, rows) => {
+            if (err) {
+                console.error("Failed to resolve chat notification recipients:", err.message);
+                return;
+            }
+
+            const recipients = new Set(
+                rows
+                    .map((item) => String(item.email || "").trim().toLowerCase())
+                    .filter(Boolean)
+            );
+
+            recipients.add(ADMIN_EMAIL);
+            recipients.delete(senderEmail);
+
+            const eventTitle = String(rows?.[0]?.event_title || "Etkinlik sohbeti").trim() || "Etkinlik sohbeti";
+
+            const payload = {
+                eventId,
+                eventTitle,
+                senderEmail,
+                senderName,
+                messagePreview: preview,
+                createdAt,
+            };
+
+            for (const recipientEmail of recipients) {
+                io.to(recipientEmail).emit("chat-notification", payload);
+                io.to(recipientEmail).emit("chat-unread-updated", {
+                    eventId,
+                    unreadDelta: 1,
+                });
+            }
         }
     );
 };
@@ -131,6 +180,29 @@ const initSocket = (httpServer) => {
             }
         });
 
+        socket.on("event-typing", (payload) => {
+            const eventId = Number(payload?.eventId);
+            const isTyping = payload?.isTyping === true;
+
+            if (!Number.isInteger(eventId) || eventId <= 0) {
+                return;
+            }
+
+            canJoinEventRoom({ eventId, user: socket.user }, (err, allowed) => {
+                if (err || !allowed) {
+                    return;
+                }
+
+                const room = getEventRoomName(eventId);
+                socket.to(room).emit("event-typing", {
+                    eventId,
+                    senderEmail: String(socket.user?.email || "").trim().toLowerCase(),
+                    senderName: String(socket.user?.name || "User").trim().slice(0, 255),
+                    isTyping,
+                });
+            });
+        });
+
         socket.on("send-event-message", (payload, ack) => {
             const eventId = Number(payload?.eventId);
             const message = sanitizeMessage(payload?.message);
@@ -193,6 +265,13 @@ const initSocket = (httpServer) => {
                         };
 
                         io.to(room).emit("event-message", outgoing);
+                        emitChatNotificationToRecipients({
+                            eventId,
+                            senderEmail,
+                            senderName,
+                            message,
+                            createdAt: outgoing.createdAt,
+                        });
                         if (typeof ack === "function") {
                             ack({ ok: true, data: outgoing });
                         }
