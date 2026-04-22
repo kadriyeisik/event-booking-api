@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'models/admin_booking.dart';
 import 'services/api_service.dart';
 import 'services/csv_export_service.dart';
+import 'qr_scanner_screen.dart';
 
 class AdminBookingsScreen extends StatefulWidget {
   const AdminBookingsScreen({super.key});
@@ -383,6 +384,22 @@ class _AdminBookingsScreenState extends State<AdminBookingsScreen> {
         title: const Text('Rezervasyon Yönetimi'),
         actions: [
           IconButton(
+            icon: const Icon(Icons.qr_code_scanner),
+            tooltip: 'QR Tara',
+            onPressed: () async {
+              await Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const QrScannerScreen()),
+              );
+
+              if (!mounted) {
+                return;
+              }
+
+              _reload();
+            },
+          ),
+          IconButton(
             icon: const Icon(Icons.file_download_outlined),
             tooltip: 'Filtrelenmiş CSV Dışa Aktar',
             onPressed: _exportFilteredBookings,
@@ -525,6 +542,9 @@ class _AdminBookingsScreenState extends State<AdminBookingsScreen> {
                         ),
                         Text(
                           'Bilet: ${booking.ticketCount}  •  Toplam: ₤${booking.totalPrice.toStringAsFixed(2)}',
+                        ),
+                        Text(
+                          'Ödeme: ${booking.paymentStatus}  •  Giriş: ${booking.checkedIn ? 'Yapıldı' : 'Bekliyor'}',
                         ),
                         const SizedBox(height: 10),
                         Row(

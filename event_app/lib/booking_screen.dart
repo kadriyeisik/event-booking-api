@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
+
 import 'models/event.dart';
 import 'services/api_service.dart';
 import 'services/auth_service.dart';
-import 'services/fake_payment_service.dart';
 
 class BookingScreen extends StatefulWidget {
   final Event event;
@@ -21,13 +22,8 @@ class _BookingScreenState extends State<BookingScreen> {
   final TextEditingController _ticketCountController = TextEditingController(
     text: '1',
   );
-  final TextEditingController _cardHolderController = TextEditingController();
-  final TextEditingController _cardNumberController = TextEditingController();
-  final TextEditingController _expiryController = TextEditingController();
-  final TextEditingController _cvvController = TextEditingController();
 
   bool _isLoading = false;
-  bool _obscureCvv = true;
 
   @override
   void initState() {
@@ -37,7 +33,6 @@ class _BookingScreenState extends State<BookingScreen> {
     if (user != null) {
       _nameController.text = user.name;
       _emailController.text = user.email;
-      _cardHolderController.text = user.name;
     }
   }
 
@@ -46,10 +41,6 @@ class _BookingScreenState extends State<BookingScreen> {
     _nameController.dispose();
     _emailController.dispose();
     _ticketCountController.dispose();
-    _cardHolderController.dispose();
-    _cardNumberController.dispose();
-    _expiryController.dispose();
-    _cvvController.dispose();
     super.dispose();
   }
 
@@ -65,15 +56,52 @@ class _BookingScreenState extends State<BookingScreen> {
     setState(() => _isLoading = true);
 
     try {
-      FakePaymentResult? paymentResult;
       if (_requiresPayment) {
-        paymentResult = await FakePaymentService.processCardPayment(
-          cardHolder: _cardHolderController.text,
-          cardNumber: _cardNumberController.text,
-          expiry: _expiryController.text,
-          cvv: _cvvController.text,
-          amount: _totalPrice,
+        if (!AuthService.isLoggedIn) {
+          throw Exception('Ücretli etkinlikler için önce giriş yapmalısın.');
+        }
+
+        final session = await ApiService.createCheckoutSession(
+          eventId: widget.event.id,
+          ticketCount: _ticketCount,
         );
+
+        final uri = Uri.tryParse(session.checkoutUrl);
+        if (uri == null) {
+          throw Exception('Geçersiz checkout bağlantısı döndü.');
+        }
+
+        final launched = await launchUrl(
+          uri,
+          mode: LaunchMode.externalApplication,
+        );
+
+        if (!launched) {
+          throw Exception('Stripe ödeme sayfası açılamadı.');
+        }
+
+        if (!mounted) {
+          return;
+        }
+
+        await showDialog<void>(
+          context: context,
+          builder: (_) => AlertDialog(
+            icon: const Icon(Icons.open_in_browser, color: Colors.deepPurple, size: 56),
+            title: const Text('Ödeme Sayfası Açıldı'),
+            content: const Text(
+              'Stripe ödeme sayfası tarayıcıda açıldı. Ödemeyi tamamladıktan sonra uygulamaya dönüp Rezervasyonlarım ekranından durumunu ve QR biletini kontrol edebilirsin.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('Tamam'),
+              ),
+            ],
+          ),
+        );
+
+        return;
       }
 
       await ApiService.bookEvent(
@@ -101,15 +129,7 @@ class _BookingScreenState extends State<BookingScreen> {
               const SizedBox(height: 4),
               Text('Email: ${_emailController.text}'),
               const SizedBox(height: 4),
-              Text(
-                _requiresPayment
-                    ? 'Odeme: ${paymentResult?.maskedCard ?? ''}'
-                    : 'Odeme: Ucretsiz rezervasyon',
-              ),
-              if (_requiresPayment) ...[
-                const SizedBox(height: 4),
-                Text('Referans: ${paymentResult?.reference ?? '-'}'),
-              ],
+              const Text('Odeme: Ucretsiz rezervasyon'),
               const SizedBox(height: 12),
               const Text(
                 'Rezervasyon bilgileri email adresinize gönderilecektir.',
@@ -313,7 +333,7 @@ class _BookingScreenState extends State<BookingScreen> {
                           children: [
                             Text(
                               _requiresPayment
-                                  ? 'Checkout'
+                                  ? 'Stripe Checkout'
                                   : 'Ucretsiz Rezervasyon',
                               style: const TextStyle(
                                 fontWeight: FontWeight.bold,
@@ -323,139 +343,14 @@ class _BookingScreenState extends State<BookingScreen> {
                             const SizedBox(height: 6),
                             Text(
                               _requiresPayment
-                                  ? 'Rezervasyon odemesi uygulama icinde simule edilir. Test karti olarak 4242 4242 4242 4242 kullanabilirsin.'
+                                  ? 'Odeme tarayicida acilan guvenli Stripe Checkout sayfasinda tamamlanir. Odeme tamamlandiginda rezervasyonun onaylanir ve QR biletin olusur.'
                                   : 'Bu etkinlik ucretsiz oldugu icin odeme adimi atlanacak.',
                             ),
-                            if (_requiresPayment) ...[
-                              const SizedBox(height: 10),
-                              const Text(
-                                'Basarisiz test karti: 4000 0000 0000 0000',
-                                style: TextStyle(color: Colors.redAccent),
-                              ),
-                            ],
                           ],
                         ),
                       ),
                     ),
                     const SizedBox(height: 16),
-
-                    if (_requiresPayment) ...[
-                      Text(
-                        'Odeme Bilgileri',
-                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      TextFormField(
-                        controller: _cardHolderController,
-                        decoration: const InputDecoration(
-                          labelText: 'Kart Uzerindeki Isim',
-                          prefixIcon: Icon(Icons.badge_outlined),
-                          border: OutlineInputBorder(),
-                        ),
-                        validator: (value) {
-                          if (!_requiresPayment) {
-                            return null;
-                          }
-                          if (value == null || value.trim().isEmpty) {
-                            return 'Kart uzerindeki isim gerekli';
-                          }
-                          return null;
-                        },
-                      ),
-                      const SizedBox(height: 16),
-                      TextFormField(
-                        controller: _cardNumberController,
-                        decoration: const InputDecoration(
-                          labelText: 'Kart Numarasi',
-                          prefixIcon: Icon(Icons.credit_card),
-                          border: OutlineInputBorder(),
-                          hintText: '4242 4242 4242 4242',
-                        ),
-                        keyboardType: TextInputType.number,
-                        inputFormatters: [
-                          FilteringTextInputFormatter.allow(RegExp(r'[0-9 ]')),
-                          LengthLimitingTextInputFormatter(19),
-                        ],
-                        validator: (value) {
-                          if (!_requiresPayment) {
-                            return null;
-                          }
-                          final digits = value?.replaceAll(RegExp(r'\D'), '') ?? '';
-                          if (digits.length != 16) {
-                            return 'Kart numarasi 16 haneli olmali';
-                          }
-                          return null;
-                        },
-                      ),
-                      const SizedBox(height: 16),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TextFormField(
-                              controller: _expiryController,
-                              decoration: const InputDecoration(
-                                labelText: 'Son Kullanma',
-                                prefixIcon: Icon(Icons.date_range_outlined),
-                                border: OutlineInputBorder(),
-                                hintText: 'AA/YY',
-                              ),
-                              keyboardType: TextInputType.datetime,
-                              inputFormatters: [
-                                FilteringTextInputFormatter.allow(RegExp(r'[0-9/]')),
-                                LengthLimitingTextInputFormatter(5),
-                              ],
-                              validator: (value) {
-                                if (!_requiresPayment) {
-                                  return null;
-                                }
-                                if (value == null ||
-                                    !RegExp(r'^(0[1-9]|1[0-2])\/\d{2}$').hasMatch(value.trim())) {
-                                  return 'AA/YY';
-                                }
-                                return null;
-                              },
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: TextFormField(
-                              controller: _cvvController,
-                              decoration: InputDecoration(
-                                labelText: 'CVV',
-                                prefixIcon: const Icon(Icons.lock_outline),
-                                border: const OutlineInputBorder(),
-                                suffixIcon: IconButton(
-                                  icon: Icon(
-                                    _obscureCvv ? Icons.visibility : Icons.visibility_off,
-                                  ),
-                                  onPressed: () {
-                                    setState(() => _obscureCvv = !_obscureCvv);
-                                  },
-                                ),
-                              ),
-                              obscureText: _obscureCvv,
-                              keyboardType: TextInputType.number,
-                              inputFormatters: [
-                                FilteringTextInputFormatter.digitsOnly,
-                                LengthLimitingTextInputFormatter(3),
-                              ],
-                              validator: (value) {
-                                if (!_requiresPayment) {
-                                  return null;
-                                }
-                                if (value == null || value.trim().length != 3) {
-                                  return '3 hane';
-                                }
-                                return null;
-                              },
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 20),
-                    ],
 
                     ElevatedButton.icon(
                       onPressed: _isLoading ? null : _book,
@@ -469,10 +364,10 @@ class _BookingScreenState extends State<BookingScreen> {
                       label: Text(
                         _isLoading
                             ? (_requiresPayment
-                              ? 'Odeme aliniyor ve rezervasyon olusturuluyor...'
+                              ? 'Stripe odeme sayfasi hazirlaniyor...'
                               : 'Rezervasyon yapiliyor...')
                             : (_requiresPayment
-                              ? 'Odemeyi Simule Et ve Rezerve Et'
+                              ? 'Stripe ile Ode ve Rezerve Et'
                               : 'Ucretsiz Rezervasyonu Onayla'),
                       ),
                       style: ElevatedButton.styleFrom(

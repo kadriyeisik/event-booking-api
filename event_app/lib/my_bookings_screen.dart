@@ -7,6 +7,7 @@ import 'services/auth_service.dart';
 import 'services/csv_export_service.dart';
 import 'services/socket_service.dart';
 import 'event_chat_screen.dart';
+import 'qr_ticket_screen.dart';
 
 class MyBookingsScreen extends StatefulWidget {
   const MyBookingsScreen({super.key});
@@ -188,6 +189,11 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
     return isAdmin || booking.eventStatus.trim().toLowerCase() == 'approved';
   }
 
+  bool _canShowQr(MyBooking booking) {
+    return booking.eventStatus.trim().toLowerCase() == 'approved' &&
+        booking.paymentStatus.trim().toLowerCase() == 'paid';
+  }
+
   int _chatUnreadForEvent(int eventId) {
     return _chatUnreadCounts[eventId] ?? 0;
   }
@@ -365,54 +371,82 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
                             ),
                           ),
                           const SizedBox(height: 8),
-                          Align(
-                            alignment: Alignment.centerRight,
-                            child: FilledButton.icon(
-                              onPressed: _canOpenChat(booking)
-                                  ? () async {
-                                      await Navigator.push(
-                                        context,
-                                        MaterialPageRoute(
-                                          builder: (_) => EventChatScreen(
-                                            eventId: booking.eventId,
-                                            eventTitle: booking.eventTitle,
+                          Wrap(
+                            alignment: WrapAlignment.end,
+                            spacing: 10,
+                            runSpacing: 10,
+                            children: [
+                              OutlinedButton.icon(
+                                onPressed: _canShowQr(booking)
+                                    ? () async {
+                                        await Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                            builder: (_) => QrTicketScreen(
+                                              bookingId: booking.id,
+                                            ),
+                                          ),
+                                        );
+
+                                        if (!mounted) {
+                                          return;
+                                        }
+
+                                        _refresh();
+                                      }
+                                    : null,
+                                icon: const Icon(Icons.qr_code_2),
+                                label: Text(
+                                  booking.checkedIn ? 'Bilet Kullanıldı' : 'QR Biletim',
+                                ),
+                              ),
+                              FilledButton.icon(
+                                onPressed: _canOpenChat(booking)
+                                    ? () async {
+                                        await Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                            builder: (_) => EventChatScreen(
+                                              eventId: booking.eventId,
+                                              eventTitle: booking.eventTitle,
+                                            ),
+                                          ),
+                                        );
+
+                                        if (!mounted) {
+                                          return;
+                                        }
+
+                                        _loadUnreadCounts();
+                                      }
+                                    : null,
+                                icon: const Icon(Icons.forum_outlined),
+                                label: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Text('Sohbet Odası'),
+                                    if (_chatUnreadForEvent(booking.eventId) > 0) ...[
+                                      const SizedBox(width: 8),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                        decoration: BoxDecoration(
+                                          color: Colors.orange,
+                                          borderRadius: BorderRadius.circular(10),
+                                        ),
+                                        child: Text(
+                                          _chatUnreadForEvent(booking.eventId).toString(),
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 11,
                                           ),
                                         ),
-                                      );
-
-                                      if (!mounted) {
-                                        return;
-                                      }
-
-                                      _loadUnreadCounts();
-                                    }
-                                  : null,
-                              icon: const Icon(Icons.forum_outlined),
-                              label: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  const Text('Sohbet Odası'),
-                                  if (_chatUnreadForEvent(booking.eventId) > 0) ...[
-                                    const SizedBox(width: 8),
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                      decoration: BoxDecoration(
-                                        color: Colors.orange,
-                                        borderRadius: BorderRadius.circular(10),
                                       ),
-                                      child: Text(
-                                        _chatUnreadForEvent(booking.eventId).toString(),
-                                        style: const TextStyle(
-                                          color: Colors.white,
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 11,
-                                        ),
-                                      ),
-                                    ),
+                                    ],
                                   ],
-                                ],
+                                ),
                               ),
-                            ),
+                            ],
                           ),
                         ],
                       ),

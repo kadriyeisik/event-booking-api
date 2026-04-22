@@ -10,6 +10,10 @@ class AdminBooking {
   final String eventLocation;
   final String eventDate;
   final String eventPrice;
+  final String paymentStatus;
+  final String? qrToken;
+  final bool checkedIn;
+  final String checkedInAt;
 
   AdminBooking({
     required this.id,
@@ -23,6 +27,10 @@ class AdminBooking {
     required this.eventLocation,
     required this.eventDate,
     required this.eventPrice,
+    required this.paymentStatus,
+    required this.qrToken,
+    required this.checkedIn,
+    required this.checkedInAt,
   });
 
   factory AdminBooking.fromJson(Map<String, dynamic> json) {
@@ -38,6 +46,10 @@ class AdminBooking {
       eventLocation: json['location'] ?? '',
       eventDate: json['event_date'] ?? '',
       eventPrice: json['price']?.toString() ?? '0',
+      paymentStatus: json['payment_status']?.toString() ?? 'unpaid',
+      qrToken: json['qr_token']?.toString(),
+      checkedIn: json['checked_in'] == 1 || json['checked_in'] == true,
+      checkedInAt: json['checked_in_at']?.toString() ?? '',
     );
   }
 
